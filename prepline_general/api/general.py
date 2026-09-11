@@ -7,11 +7,9 @@ import logging
 import mimetypes
 import os
 import secrets
-import zipfile
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from types import TracebackType
 from typing import IO, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import backoff
@@ -33,6 +31,7 @@ from pypdf.errors import FileNotDecryptedError, PdfReadError
 from starlette.datastructures import Headers
 from starlette.types import Send
 
+from prepline_general.api.filetypes import get_validated_mimetype
 from prepline_general.api.models.form_params import GeneralFormParams
 from unstructured.documents.elements import Element
 from unstructured.partition.auto import partition
@@ -42,7 +41,7 @@ from unstructured.staging.base import (
     elements_from_json,
 )
 from unstructured_inference.models.base import UnknownModelException
-from unstructured_inference.models.chipper import MODEL_TYPES as CHIPPER_MODEL_TYPES
+from prepline_general.api import __version__ as api_version
 
 app = FastAPI()
 router = APIRouter()
@@ -58,37 +57,6 @@ def is_compatible_response_type(media_type: str, response_type: type) -> bool:
 
 
 logger = logging.getLogger("unstructured_api")
-
-DEFAULT_MIMETYPES = (
-    "application/pdf,application/msword,image/jpeg,image/png,text/markdown,"
-    "text/x-markdown,text/html,"
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-    "application/vnd.ms-excel,application/vnd.openxmlformats-officedocument."
-    "presentationml.presentation,"
-    "application/json,"
-    "application/vnd.ms-powerpoint,"
-    "text/html,message/rfc822,text/plain,image/png,"
-    "application/epub,application/epub+zip,"
-    "application/rtf,text/rtf,"
-    "application/vnd.oasis.opendocument.text,"
-    "text/csv,text/x-csv,application/csv,application/x-csv,"
-    "text/comma-separated-values,text/x-comma-separated-values,"
-    "application/xml,text/xml,text/x-rst,text/prs.fallenstein.rst,"
-    "text/tsv,text/tab-separated-values,"
-    "application/x-ole-storage,application/vnd.ms-outlook,"
-    "application/yaml,"
-    "application/x-yaml,"
-    "text/x-yaml,"
-    "text/yaml,"
-    "image/bmp,"
-    "image/heic,"
-    "image/tiff,"
-    "text/org,"
-)
-
-if not os.environ.get("UNSTRUCTURED_ALLOWED_MIMETYPES", None):
-    os.environ["UNSTRUCTURED_ALLOWED_MIMETYPES"] = DEFAULT_MIMETYPES
 
 
 def get_pdf_splits(pdf_pages: Sequence[PageObject], split_size: int = 1):
@@ -166,7 +134,7 @@ def partition_file_via_api(
     The remote url is set by the `UNSTRUCTURED_PARALLEL_MODE_URL` environment variable.
 
     Args:
-    `file_tuple` is a file-like object and byte offset of a page (file, page_offest)
+    `file_tuple` is a file-like object and byte offset of a page (file, page_offset)
     `request` is used to forward the api key header
     `filename` and `content_type` are passed in the file form data
     `partition_kwargs` holds any form parameters to be sent on
@@ -177,7 +145,7 @@ def partition_file_via_api(
     if not request_url:
         raise HTTPException(status_code=500, detail="Parallel mode enabled but no url set!")
 
-    api_key = request.headers.get("unstructured-api-key", default="")
+    api_key = request.headers.get("unstructured-api-key", "")
     partition_kwargs["starting_page_number"] = (
         partition_kwargs.get("starting_page_number", 1) + page_offset
     )
@@ -244,37 +212,6 @@ def partition_pdf_splits(
     return results
 
 
-is_chipper_processing = False
-
-
-class ChipperMemoryProtection:
-    """Chipper calls are expensive, and right now we can only do one call at a time.
-
-    If the model is in use, return a 503 error. The API should scale up and the user can try again
-    on a different server.
-    """
-
-    def __enter__(self):
-        global is_chipper_processing
-        if is_chipper_processing:
-            # Log here so we can track how often it happens
-            logger.error("Chipper is already is use")
-            raise HTTPException(
-                status_code=503, detail="Server is under heavy load. Please try again later."
-            )
-
-        is_chipper_processing = True
-
-    def __exit__(
-        self,
-        exc_type: Optional[type[BaseException]],
-        exc_value: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ):
-        global is_chipper_processing
-        is_chipper_processing = False
-
-
 def pipeline_api(
     file: IO[bytes],
     request: Request,
@@ -286,6 +223,7 @@ def pipeline_api(
     new_after_n_chars: Optional[int],
     overlap: int,
     overlap_all: bool,
+    include_orig_elements: bool = True,
     # ----------------------
     filename: str = "",
     file_content_type: Optional[str] = None,
@@ -303,6 +241,7 @@ def pipeline_api(
     extract_image_block_types: Optional[List[str]] = None,
     unique_element_ids: Optional[bool] = False,
     starting_page_number: Optional[int] = None,
+    include_slide_notes: Optional[bool] = True,
 ) -> List[Dict[str, Any]] | str:
     if filename.endswith(".msg"):
         # Note(yuming): convert file type for msg files
@@ -345,7 +284,9 @@ def pipeline_api(
                         "new_after_n_chars": new_after_n_chars,
                         "overlap": overlap,
                         "overlap_all": overlap_all,
+                        "include_orig_elements": include_orig_elements,
                         "starting_page_number": starting_page_number,
+                        "include_slide_notes": include_slide_notes,
                     },
                     default=str,
                 )
@@ -359,7 +300,6 @@ def pipeline_api(
     if file_content_type == "application/pdf":
         _check_pdf(file)
 
-    hi_res_model_name = _validate_hi_res_model_name(hi_res_model_name, coordinates)
     strategy = _validate_strategy(strategy)
     pdf_infer_table_structure = _set_pdf_infer_table_structure(
         pdf_infer_table_structure,
@@ -400,9 +340,11 @@ def pipeline_api(
                         "max_characters": max_characters,
                         "overlap": overlap,
                         "overlap_all": overlap_all,
+                        "include_orig_elements": include_orig_elements,
                         "extract_image_block_types": extract_image_block_types,
                         "extract_image_block_to_payload": extract_image_block_to_payload,
                         "unique_element_ids": unique_element_ids,
+                        "include_slide_notes": include_slide_notes,
                     },
                     default=str,
                 )
@@ -429,10 +371,12 @@ def pipeline_api(
             "max_characters": max_characters,
             "overlap": overlap,
             "overlap_all": overlap_all,
+            "include_orig_elements": include_orig_elements,
             "extract_image_block_types": extract_image_block_types,
             "extract_image_block_to_payload": extract_image_block_to_payload,
             "unique_element_ids": unique_element_ids,
             "starting_page_number": starting_page_number,
+            "include_slide_notes": include_slide_notes,
         }
 
         if file_content_type == "application/pdf" and pdf_parallel_mode_enabled:
@@ -443,9 +387,6 @@ def pipeline_api(
                 coordinates=coordinates,
                 **partition_kwargs,  # type: ignore # pyright: ignore[reportGeneralTypeIssues]
             )
-        elif hi_res_model_name and hi_res_model_name in CHIPPER_MODEL_TYPES:
-            with ChipperMemoryProtection():
-                elements = partition(**partition_kwargs)  # type: ignore # pyright: ignore[reportGeneralTypeIssues]
         else:
             elements = partition(**partition_kwargs)  # type: ignore # pyright: ignore[reportGeneralTypeIssues]
 
@@ -482,14 +423,12 @@ def pipeline_api(
                 status_code=400,
                 detail="The fast strategy is not available for image files",
             )
-
+        if "not a ZIP archive (so not a DOCX file)" in e.args[0]:
+            raise HTTPException(
+                status_code=422,
+                detail="File is not a valid docx",
+            )
         raise e
-    except zipfile.BadZipFile:
-        raise HTTPException(
-            status_code=422,
-            detail="File is not a valid docx",
-        )
-
     except UnknownModelException:
         raise HTTPException(
             status_code=400,
@@ -535,20 +474,38 @@ def _check_free_memory():
 
 
 def _check_pdf(file: IO[bytes]):
-    """Check if the PDF file is encrypted, otherwise assume it is not a valid PDF."""
+    """
+    Check if PDF is:
+    - Encrypted
+    - Has corrupted pages
+    - Has corrupted root object
+
+    Throws:
+    - HTTPException 442 UNPROCESSABLE ENTITY if file is encrypted or corrupted
+    """
     try:
         pdf = PdfReader(file)
 
         # This will raise if the file is encrypted
         pdf.metadata
+
+        # This will raise if the file's root object is corrupted
+        pdf.root_object
+
+        # This will raise if the file's pages are corrupted
+        list(pdf.pages)
+
         return pdf
     except FileNotDecryptedError:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="File is encrypted. Please decrypt it with password.",
         )
-    except PdfReadError:
-        raise HTTPException(status_code=422, detail="File does not appear to be a valid PDF")
+    except PdfReadError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"File does not appear to be a valid PDF. Error: {e}",
+        )
 
 
 def _validate_strategy(strategy: str) -> str:
@@ -559,21 +516,6 @@ def _validate_strategy(strategy: str) -> str:
             status_code=400, detail=f"Invalid strategy: {strategy}. Must be one of {strategies}"
         )
     return strategy
-
-
-def _validate_hi_res_model_name(
-    hi_res_model_name: Optional[str], show_coordinates: bool
-) -> Optional[str]:
-    # Make sure chipper aliases to the latest model
-    if hi_res_model_name and hi_res_model_name == "chipper":
-        hi_res_model_name = "chipperv2"
-
-    if hi_res_model_name and hi_res_model_name in CHIPPER_MODEL_TYPES and show_coordinates:
-        raise HTTPException(
-            status_code=400,
-            detail=f"coordinates aren't available when using the {hi_res_model_name} model type",
-        )
-    return hi_res_model_name
 
 
 def _validate_chunking_strategy(chunking_strategy: Optional[str]) -> Optional[str]:
@@ -607,38 +549,6 @@ def _set_pdf_infer_table_structure(
     skip_infer_table_types = [] if skip_infer_table_types is None else skip_infer_table_types
     pdf_infer_table_structure = pdf_infer_table_structure and ("pdf" not in skip_infer_table_types)
     return strategy in ("hi_res", "auto") and pdf_infer_table_structure
-
-
-def get_validated_mimetype(file: UploadFile) -> Optional[str]:
-    """The MIME-type of `file`.
-
-    The mimetype is computed based on `file.content_type`, or the mimetypes lib if that's too
-    generic. If the user has set UNSTRUCTURED_ALLOWED_MIMETYPES, validate against this list and
-    return HTTP 400 for an invalid type.
-    """
-    content_type = file.content_type
-    filename = str(file.filename)  # -- "None" when file.filename is None --
-    if not content_type or content_type == "application/octet-stream":
-        content_type = mimetypes.guess_type(filename)[0]
-
-        # Some filetypes missing for this library, just hardcode them for now
-        if not content_type:
-            if filename.endswith(".md"):
-                content_type = "text/markdown"
-            elif filename.endswith(".msg"):
-                content_type = "message/rfc822"
-
-    allowed_mimetypes_str = os.environ.get("UNSTRUCTURED_ALLOWED_MIMETYPES")
-    if allowed_mimetypes_str is not None:
-        allowed_mimetypes = allowed_mimetypes_str.split(",")
-
-        if content_type not in allowed_mimetypes:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"File type {content_type} is not supported."),
-            )
-
-    return content_type
 
 
 class MultipartMixedResponse(StreamingResponse):
@@ -683,7 +593,7 @@ class MultipartMixedResponse(StreamingResponse):
         )
         async for chunk in self.body_iterator:
             if not isinstance(chunk, bytes):
-                chunk = chunk.encode(self.charset)
+                chunk = chunk.encode(self.charset)  # type: ignore
                 chunk = b64encode(chunk)
             await send(
                 {"type": "http.response.body", "body": self.build_part(chunk), "more_body": True}
@@ -713,7 +623,7 @@ def ungz_file(file: UploadFile, gz_uncompressed_content_type: Optional[str] = No
 
 
 @router.get("/general/v0/general", include_in_schema=False)
-@router.get("/general/v0.0.70/general", include_in_schema=False)
+@router.get(f"/general/{api_version}/general", include_in_schema=False)
 async def handle_invalid_get_request():
     raise HTTPException(
         status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail="Only POST requests are supported."
@@ -728,13 +638,13 @@ async def handle_invalid_get_request():
     description="Description",
     operation_id="partition_parameters",
 )
-@router.post("/general/v0.0.70/general", include_in_schema=False)
+@router.post(f"/general/{api_version}/general", include_in_schema=False)
 def general_partition(
     request: Request,
     # cannot use annotated type here because of a bug described here:
     # https://github.com/tiangolo/fastapi/discussions/10280
     # The openapi metadata must be added separately in openapi.py file.
-    # TODO: Check if the bug is fixed and change the declaration to use Annoteted[List[UploadFile], File(...)]
+    # TODO: Check if the bug is fixed and change the declaration to use Annotated[List[UploadFile], File(...)]
     # For new parameters - add them in models/form_params.py
     files: List[UploadFile],
     form_params: GeneralFormParams = Depends(GeneralFormParams.as_form),
@@ -744,16 +654,16 @@ def general_partition(
         api_key = request.headers.get("unstructured-api-key")
         if api_key != api_key_env:
             raise HTTPException(
-                detail=f"API key {api_key} is invalid", status_code=status.HTTP_401_UNAUTHORIZED
+                detail="API key is invalid", status_code=status.HTTP_401_UNAUTHORIZED
             )
 
-    content_type = request.headers.get("Accept")
+    accept_type = request.headers.get("Accept")
 
     # -- detect response content-type conflict when multiple files are uploaded --
     if (
         len(files) > 1
-        and content_type
-        and content_type
+        and accept_type
+        and accept_type
         not in [
             "*/*",
             "multipart/mixed",
@@ -762,7 +672,7 @@ def general_partition(
         ]
     ):
         raise HTTPException(
-            detail=f"Conflict in media type {content_type} with response type 'multipart/mixed'.\n",
+            detail=f"Conflict in media type {accept_type} with response type 'multipart/mixed'.\n",
             status_code=status.HTTP_406_NOT_ACCEPTABLE,
         )
 
@@ -778,7 +688,9 @@ def general_partition(
 
     def response_generator(is_multipart: bool):
         for file in files:
-            file_content_type = get_validated_mimetype(file)
+            file_content_type = get_validated_mimetype(
+                file, content_type_hint=form_params.content_type
+            )
 
             _file = file.file
 
@@ -808,7 +720,9 @@ def general_partition(
                 new_after_n_chars=form_params.new_after_n_chars,
                 overlap=form_params.overlap,
                 overlap_all=form_params.overlap_all,
+                include_orig_elements=form_params.include_orig_elements,
                 starting_page_number=form_params.starting_page_number,
+                include_slide_notes=form_params.include_slide_notes,
             )
 
             yield (
@@ -822,30 +736,29 @@ def general_partition(
             )
 
     def join_responses(
-        responses: Sequence[str | List[Dict[str, Any]] | PlainTextResponse]
+        responses: Sequence[str | List[Dict[str, Any]] | PlainTextResponse],
     ) -> List[str | List[Dict[str, Any]]] | PlainTextResponse:
         """Consolidate partitionings from multiple documents into single response payload."""
         if form_params.output_format != "text/csv":
             return cast(List[Union[str, List[Dict[str, Any]]]], responses)
         responses = cast(List[PlainTextResponse], responses)
-        data = pd.read_csv(  # pyright: ignore[reportUnknownMemberType]
-            io.BytesIO(responses[0].body)
-        )
-        if len(responses) > 1:
-            for resp in responses[1:]:
-                resp_data = pd.read_csv(  # pyright: ignore[reportUnknownMemberType]
-                    io.BytesIO(resp.body)
-                )
-                data = data.merge(  # pyright: ignore[reportUnknownMemberType]
-                    resp_data, how="outer"
-                )
-        return PlainTextResponse(data.to_csv())
+        # -- a document that produced no elements serializes to a bodiless CSV, which pandas
+        # -- cannot parse; it contributes no rows --
+        frames = [
+            pd.read_csv(io.BytesIO(response.body))  # pyright: ignore[reportUnknownMemberType]
+            for response in responses
+            if response.body.strip()
+        ]
+        if not frames:
+            return PlainTextResponse(responses[0].body)
+        data = pd.concat(frames)  # pyright: ignore[reportUnknownMemberType]
+        return PlainTextResponse(data.to_csv(index=False))
 
     return (
         MultipartMixedResponse(
             response_generator(is_multipart=True), content_type=form_params.output_format
         )
-        if content_type == "multipart/mixed"
+        if accept_type == "multipart/mixed"
         else (
             list(response_generator(is_multipart=False))[0]
             if len(files) == 1

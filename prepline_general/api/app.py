@@ -1,19 +1,20 @@
-from fastapi import FastAPI, Request, status, HTTPException
-from fastapi.datastructures import FormData
-from fastapi.responses import JSONResponse
-from fastapi.security import APIKeyHeader
 import logging
 import os
 
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.datastructures import FormData
+from fastapi.responses import JSONResponse
+
 from .general import router as general_router
 from .openapi import set_custom_openapi
+from prepline_general.api import __version__ as api_version
 
 logger = logging.getLogger("unstructured_api")
 
 app = FastAPI(
     title="Unstructured Pipeline API",
     summary="Partition documents with the Unstructured library",
-    version="0.0.70",
+    version=str(api_version),
     docs_url="/general/docs",
     openapi_url="/general/openapi.json",
     servers=[
@@ -85,6 +86,7 @@ async def patched_get_form(
     *,
     max_files: int | float = 1000,
     max_fields: int | float = 1000,
+    max_part_size: int = 1024 * 1024,
 ) -> FormData:
     """
     Call the original get_form, and iterate the results

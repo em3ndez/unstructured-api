@@ -7,7 +7,7 @@
 # Is there a good way to reuse code here?
 # Also note this can evolve into a generalized pipeline smoke test
 
-# shellcheck disable=SC2317  # Shellcheck complains that trap functions are unreachable...
+# shellcheck disable=SC2317,SC2329  # Shellcheck complains that trap functions are unreachable/unused...
 
 set -e
 
@@ -29,8 +29,9 @@ start_container() {
     fi
 
     echo Starting container "$name"
-    docker run -p "$port":"$port" \
-	   --entrypoint uvicorn \
+    docker run --platform "$DOCKER_PLATFORM" \
+           -p "$port":"$port" \
+           --entrypoint uvicorn \
            -d \
            --rm \
            --name "$name" \
@@ -79,7 +80,7 @@ await_server_ready 8000
 # Smoke Tests
 #######################
 echo Running smoke tests with SKIP_INFERENCE_TESTS: "$SKIP_INFERENCE_TESTS"
-PYTHONPATH=. SKIP_INFERENCE_TESTS=$SKIP_INFERENCE_TESTS pytest -vv scripts/smoketest.py
+PYTHONPATH=. SKIP_INFERENCE_TESTS=$SKIP_INFERENCE_TESTS uv run --no-sync pytest --durations=20 -vv scripts/smoketest.py
 
 #######################
 # Test parallel vs single mode

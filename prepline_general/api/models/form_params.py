@@ -20,6 +20,7 @@ class GeneralFormParams(BaseModel):
     output_format: str
     coordinates: bool
     encoding: str
+    content_type: Optional[str]
     hi_res_model_name: Optional[str]
     include_page_breaks: bool
     pdf_infer_table_structure: bool
@@ -34,7 +35,9 @@ class GeneralFormParams(BaseModel):
     new_after_n_chars: Optional[int]
     overlap: int
     overlap_all: bool
+    include_orig_elements: bool
     starting_page_number: Optional[int] = None
+    include_slide_notes: bool
 
     @classmethod
     def as_form(
@@ -52,7 +55,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="OCR Languages",
                 description="The languages present in the document, for use in partitioning and/or OCR",
-                example="[eng]",
+                examples=['["eng"]'],
             ),
             BeforeValidator(SmartValueParser[List[str]]().value_or_first_element),
         ] = [],  # noqa
@@ -61,7 +64,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="OCR Languages",
                 description="The languages present in the document, for use in partitioning and/or OCR",
-                example="[eng]",
+                examples=['["eng"]'],
             ),
             BeforeValidator(SmartValueParser[List[str]]().value_or_first_element),
         ] = [],
@@ -72,7 +75,7 @@ class GeneralFormParams(BaseModel):
                 description=(
                     "The document types that you want to skip table extraction with. Default: []"
                 ),
-                example="['pdf', 'jpg', 'png']",
+                examples=['["pdf", "jpg", "png"]'],
             ),
             BeforeValidator(SmartValueParser[List[str]]().value_or_first_element),
         ] = [],  # noqa
@@ -81,7 +84,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="Uncompressed Content Type",
                 description="If file is gzipped, use this content type after unzipping",
-                example="application/pdf",
+                examples=["application/pdf"],
             ),
         ] = None,
         output_format: Annotated[
@@ -89,7 +92,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="Output Format",
                 description="The format of the response. Supported formats are application/json and text/csv. Default: application/json.",
-                example="application/json",
+                examples=["application/json"],
             ),
         ] = "application/json",
         coordinates: Annotated[
@@ -100,12 +103,21 @@ class GeneralFormParams(BaseModel):
             ),
             BeforeValidator(SmartValueParser[bool]().value_or_first_element),
         ] = False,
+        content_type: Annotated[
+            Optional[str],
+            Form(
+                title="Content type",
+                description="A hint about the content type to use (such as text/markdown), when there are problems processing a specific file. This value is a MIME type in the format type/subtype.",
+                examples=["text/markdown"],
+            ),
+            BeforeValidator(SmartValueParser[str]().value_or_first_element),
+        ] = None,
         encoding: Annotated[
             str,
             Form(
                 title="Encoding",
                 description="The encoding method used to decode the text input. Default: utf-8",
-                example="utf-8",
+                examples=["utf-8"],
             ),
             BeforeValidator(SmartValueParser[str]().value_or_first_element),
         ] = "utf-8",
@@ -114,7 +126,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="Hi Res Model Name",
                 description="The name of the inference model used when strategy is hi_res",
-                example="yolox",
+                examples=["yolox"],
             ),
             BeforeValidator(SmartValueParser[str]().value_or_first_element),
         ] = None,
@@ -145,14 +157,14 @@ class GeneralFormParams(BaseModel):
                 description="The strategy to use for partitioning PDF/image. Options are fast, hi_res, auto. Default: auto",
                 examples=["auto", "hi_res"],
             ),
-            BeforeValidator(SmartValueParser[str]().value_or_first_element),
+            BeforeValidator(SmartValueParser[str]().literal_value_stripped_or_first_element),
         ] = "auto",
         extract_image_block_types: Annotated[
             List[str],
             Form(
                 title="Image block types to extract",
                 description="The types of elements to extract, for use in extracting image blocks as base64 encoded data stored in metadata fields",
-                example="""["image", "table"]""",
+                examples=["""["image", "table"]"""],
             ),
             BeforeValidator(SmartValueParser[List[str]]().value_or_first_element),
         ] = [],  # noqa
@@ -162,7 +174,7 @@ class GeneralFormParams(BaseModel):
                 title="unique_element_ids",
                 description="""When `True`, assign UUIDs to element IDs, which guarantees their uniqueness 
 (useful when using them as primary keys in database). Otherwise a SHA-256 of element text is used. Default: False""",
-                example=True,
+                examples=[True],
             ),
         ] = False,
         # -- chunking options --
@@ -179,7 +191,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="Combine Under N Chars",
                 description="If chunking strategy is set, combine elements until a section reaches a length of n chars. Default: 500",
-                example=500,
+                examples=[500],
             ),
         ] = None,
         max_characters: Annotated[
@@ -187,7 +199,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="Max Characters",
                 description="If chunking strategy is set, cut off new sections after reaching a length of n chars (hard max). Default: 1500",
-                example=1500,
+                examples=[1500],
             ),
         ] = 500,
         multipage_sections: Annotated[
@@ -202,7 +214,7 @@ class GeneralFormParams(BaseModel):
             Form(
                 title="New after n chars",
                 description="If chunking strategy is set, cut off new sections after reaching a length of n chars (soft max). Default: 1500",
-                example=1500,
+                examples=[1500],
             ),
         ] = None,
         overlap: Annotated[
@@ -212,7 +224,7 @@ class GeneralFormParams(BaseModel):
                 description="""Specifies the length of a string ("tail") to be drawn from each chunk and prefixed to the
 next chunk as a context-preserving mechanism. By default, this only applies to split-chunks
 where an oversized element is divided into multiple chunks by text-splitting. Default: 0""",
-                example=20,
+                examples=[20],
             ),
         ] = 0,
         overlap_all: Annotated[
@@ -222,9 +234,21 @@ where an oversized element is divided into multiple chunks by text-splitting. De
                 description="""When `True`, apply overlap between "normal" chunks formed from whole
 elements and not subject to text-splitting. Use this with caution as it entails a certain
 level of "pollution" of otherwise clean semantic chunk boundaries. Default: False""",
-                example=True,
+                examples=[True],
             ),
         ] = False,
+        include_orig_elements: Annotated[
+            bool,
+            Form(
+                title="Include Orig Elements",
+                description="""When `True` (the default), the elements used to form each chunk are
+added to that chunk's `.metadata.orig_elements` as a gzipped+base64 blob. Set to `False` to omit
+them and produce a much smaller payload — useful for large tables, where this blob is duplicated
+into every chunk and can balloon the response size dramatically.""",
+                examples=[False],
+            ),
+            BeforeValidator(SmartValueParser[bool]().value_or_first_element),
+        ] = True,
         starting_page_number: Annotated[
             Optional[int],
             Form(
@@ -233,9 +257,20 @@ level of "pollution" of otherwise clean semantic chunk boundaries. Default: Fals
                     "When PDF is split into pages before sending it into the API, providing "
                     "this information will allow the page number to be assigned correctly."
                 ),
-                example=3,
+                examples=[3],
             ),
         ] = None,
+        include_slide_notes: Annotated[
+            bool,
+            Form(
+                title="include_slide_notes",
+                description=(
+                    "When `True`, slide notes from .ppt and .pptx files"
+                    " will be included in the response. Default: `True`"
+                ),
+                examples=[False],
+            ),
+        ] = True,
     ) -> "GeneralFormParams":
         return cls(
             xml_keep_tags=xml_keep_tags,
@@ -245,6 +280,7 @@ level of "pollution" of otherwise clean semantic chunk boundaries. Default: Fals
             gz_uncompressed_content_type=gz_uncompressed_content_type,
             output_format=output_format,
             coordinates=coordinates,
+            content_type=content_type,
             encoding=encoding,
             hi_res_model_name=hi_res_model_name,
             include_page_breaks=include_page_breaks,
@@ -260,6 +296,8 @@ level of "pollution" of otherwise clean semantic chunk boundaries. Default: Fals
             new_after_n_chars=new_after_n_chars,
             overlap=overlap,
             overlap_all=overlap_all,
+            include_orig_elements=include_orig_elements,
             unique_element_ids=unique_element_ids,
             starting_page_number=starting_page_number,
+            include_slide_notes=include_slide_notes,
         )

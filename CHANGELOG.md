@@ -1,3 +1,182 @@
+## 0.1.11
+
+### Fixes
+
+- **Restore `MAX_LIFETIME_SECONDS` support in the Docker image**: `scripts/app-start.sh` invokes GNU `timeout` with `--preserve-status` and `--foreground`, flags the Wolfi base's BusyBox `timeout` does not support. Setting `MAX_LIFETIME_SECONDS` therefore caused the server to fail to start and the container to restart-loop. Added `coreutils` to the image so GNU `timeout` is available. This regressed when the base image moved from RockyLinux (which shipped GNU coreutils) to Wolfi.
+
+## 0.1.10
+
+### Fixes
+
+- **Preserve rows in multi-file CSV responses**: CSV output for a multi-file request was produced by outer-merging each file's DataFrame into the previous one, which collapsed identical rows across files into a single row and dropped legitimate duplicates. Results are now concatenated in request order, so every row from every file is retained, differing columns are unioned, and the row index is no longer emitted as a leading unnamed column. A file that produces no elements contributes no rows instead of failing the whole request.
+
+## 0.1.9
+
+### Security
+
+- **Avoid reflecting invalid API keys**: authentication failures now return a generic error message instead of including the submitted credential in the response and request logs.
+
+## 0.1.8
+
+### Features
+
+- **Add `include_orig_elements` parameter for chunking**: When `True` (the default), the elements used to form each chunk are attached to that chunk's `.metadata.orig_elements` as a gzipped+base64 blob. Set to `False` to omit them and produce a much smaller response payload — useful for large documents with tables, where this blob is duplicated into every chunk.
+
+## 0.1.7
+
+### Security
+
+- **Bump starlette** to >=1.1.0 to remediate CVE-2025-62727 (HIGH) and CVE-2025-54121 (MEDIUM).
+- **Bump lxml** to >=6.1.1 to remediate CVE-2026-41066 (HIGH).
+- **Bump python-multipart** to >=0.0.29 to remediate CVE-2026-40347 (MEDIUM).
+- **Rebuild** to pick up latest python-3.12 apk, resolving CVE-2025-12781 (MEDIUM).
+
+## 0.1.6
+
+### Security
+
+- **Bump starlette** to latest to remediate CVE-2025-54121 (MEDIUM) and CVE-2025-62727 (HIGH). Removes the `starlette==0.41.2` constraint pin.
+- **Bump python-multipart** to latest to remediate CVE-2026-40347 (MEDIUM).
+
+## 0.1.5
+
+### Security
+
+- **Purge uv wheel cache after opencv swap**: The 0.1.4 Dockerfile uninstalled the PyPI `opencv-python` wheel and installed the ffmpeg-free replacement, but the original wheel's extracted contents (including `libavcodec.so.59.*` and friends) remained in `~/.cache/uv/archive-v0/…/opencv_python.libs/`. Image scanners still flagged the 14 ffmpeg CVEs because they walk the whole filesystem. Added `uv cache clean` at the end of the opencv replacement `RUN` so the vulnerable libs are evicted from the final image layer.
+
+## 0.1.4
+
+### Security
+
+- **Replace PyPI opencv wheels with ffmpeg-free builds in Docker image**: After `uv sync`, the Dockerfile now substitutes the installed PyPI opencv-python variant with a source-built `opencv-contrib-python-headless` wheel compiled with `WITH_FFMPEG=OFF`, eliminating 14 bundled ffmpeg CVEs. The contrib-headless variant is a strict superset of the cv2 API (core + contrib modules, no GUI) and can transparently replace `opencv-python`, `opencv-python-headless`, or `opencv-contrib-python`. Wheel is downloaded from the upstream `Unstructured-IO/unstructured` release and hash-verified. Mirrors [unstructured#4336](https://github.com/Unstructured-IO/unstructured/pull/4336).
+
+## 0.1.3
+
+### Security
+
+- **security:** fix(deps): upgrade vulnerable transitive dependencies [security]
+
+## 0.1.2
+* Bump all packages (refresh uv.lock), pulling `unstructured==0.22.12` which replaces NLTK with spaCy
+* Replace `download_nltk_packages` calls with spaCy model pre-download in Makefile, Dockerfile, and CI
+* Switch `uv sync --frozen` to `uv sync --locked` across Dockerfile, Makefile, and CI workflows
+
+## 0.1.1
+* Switch arm64 Docker build runner from custom `opensource-linux-arm64-4core` to GitHub-hosted `ubuntu-24.04-arm`
+* Consolidate multiarch Docker manifest creation into a single `docker buildx imagetools create` call
+* Skip inference tests in CD Docker smoke tests for both architectures (already covered by CI)
+
+## 0.1.0
+* Migrate to native uv for package management, replacing pip and pip-compile
+* Replace black and flake8 with ruff for linting and formatting
+* Remove all version pins from dependencies, use uv.lock for reproducibility
+* Update Dockerfile, CI workflows, and Makefile to use uv throughout
+* Fix flaky Korean OCR test assertions for tesseract compatibility
+* Use `.python-version` file as single source of truth for Python version across all CI workflows
+* Re-enable arm64 Docker image builds with a dedicated ARM runner, restoring multiarch support for both amd64 and arm64
+* Switch all CI workflows to faster self-hosted runners (`opensource-linux-8core`)
+* Split lint tools into a lightweight dependency group so the CI lint step no longer installs heavy runtime dependencies
+* Add explicit dependencies for `backoff`, `pandas`, `psutil`, `pypdf`, and `requests` (previously only transitive via `unstructured[all-docs]`)
+* Pre-download NLTK models before parallel test runs to prevent race conditions
+* Pin uv version in Dockerfile for reproducible builds
+* Remove `py3.12-pip` from Dockerfile (unused since uv migration)
+* Drop mypy from CI (ruff covers linting sufficiently)
+* Add retry logic to parallel-mode curl tests for transient connection failures
+* Switch Dependabot from `pip` to `uv` ecosystem
+* Remove unused `ARCH` variable from Makefile
+
+## 0.0.93
+* Refactored the Dockerfile to use the chainguard/wolfi-base image instead of the unstructured/base-image. This is to align with the recent change in the unstructured repo where the same change was made.
+* upgraded dependancies to address CVEs
+
+## 0.0.92
+* Upgrade pdfminer-six to 20260107 to fix ~15-18% performance regression from eager f-string evaluation
+
+## 0.0.91
+* Upgrade packages to resolve CVEs
+
+## 0.0.90
+* Upgrade version to pull in latest unstructured verison and bump versions of dependancies.
+
+## 0.0.89
+* Upgrade Pillow to 11.3.0 to address a CVE
+
+## 0.0.88
+* Return 422 HTTP code when PDF can't be processed
+
+## 0.0.87
+* Patch various CVEs
+* Enable pytest concurrency
+* Enable Claude Code
+* Use Python 3.12 for testing
+* Define version in one place
+
+## 0.0.86
+* Patch various CVEs
+* Bump Python version to 3.12, some packages no longer support 3.9
+
+## 0.0.84
+* Patch h11 CVE
+* bump httpcore version due to h11 dependency
+
+## 0.0.83
+
+* Patch various CVEs
+* Fix Starlette vulnerability
+
+## 0.0.82
+
+* Patch various python CVEs
+* Bump to `unstructured` 0.16.11
+* No longer attempts to download NLTK asset from S3 which could result in a 403
+
+## 0.0.81
+
+* Update `strategy` parameter to allow `'` and `"` as input surrounding the value.
+
+## 0.0.80
+
+* Bump to `unstructured` 0.15.10
+* Add `include_slide_notes` parameter, indicating whether slide notes in `ppt` and `pptx` files should be partitioned. Default is `True`. Now, when slide notes are present in the file, they will be included alongside other elements, which may shift the index numbers of non-note elements.
+
+## 0.0.79
+
+* Bump to `unstructured` 0.15.7
+
+## 0.0.78
+
+* Resolve NLTK CVE.
+* Bump to `unstructured` 0.15.6
+
+## 0.0.77
+
+* Bump to `unstructured` 0.15.5
+
+## 0.0.76
+* Use the library's `detect_filetype` in API to determine mimetype
+* Add content_type api parameter
+* Bump to `unstructured` 0.15.1
+
+## 0.0.75
+
+* Remove constraint on `safetensors` that preventing us from bumping `transformers`.
+
+## 0.0.74
+
+* Bump to `unstructured` 0.15.0
+
+## 0.0.73
+
+* Bump to `unstructured` 0.14.10
+
+## 0.0.72
+
+* Fix certain filetypes failing mimetype lookup in the new base image
+
+## 0.0.71
+
+* replace rockylinux with chainguard/wolfi as a base image for `amd64`
+
 ## 0.0.70
 
 * Bump to `unstructured` 0.14.6
@@ -75,7 +254,7 @@
 ## 0.0.56
 * **Add `max_characters` param for chunking** This param gives users additional control to "chunk" elements into larger or smaller `CompositeElement`s
 * Bump unstructured to 0.10.28
-* Make sure chipperv2 is called whien `hi_res_model_name==chipper`
+* Make sure chipperv2 is called when `hi_res_model_name==chipper`
 
 
 ## 0.0.55
@@ -117,7 +296,7 @@
 
 ## 0.0.48
 
-* **Adds `languages` kwarg** `ocr_languages` will eventually be deprecated and replaced by `lanugages` to specify what languages to use for OCR
+* **Adds `languages` kwarg** `ocr_languages` will eventually be deprecated and replaced by `languages` to specify what languages to use for OCR
 * Adds a startup log and other minor cleanups
 
 ## 0.0.47
@@ -168,7 +347,7 @@
 
 ## 0.0.39
 
-* Fix wrong handleing on param skip_infer_table_types
+* Fix incorrect handling on param skip_infer_table_types
 * Pin `safetensors` to fix a build error with 0.0.38
 
 ## 0.0.38
